@@ -53,7 +53,7 @@ retriever = None
 @mcp.tool()
 async def ingest_documents() -> Dict[str, Any]:
     """
-    Ingest anytype documents from the API into the vector store for RAG, semantic searches, additional information in other tools on this MCP server.
+    Ingest anytype documents from the API into the vector store for RAG, semantic searches, and for additional information in other tools on this MCP server.
     
     Returns:
         Ingestion summary
