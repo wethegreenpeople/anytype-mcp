@@ -1,0 +1,17 @@
+[project]
+name = "anytype-mcp"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = [
+    "chromadb>=1.0.4",
+    "fastmcp>=1.0",
+    "httpx>=0.28.1",
+    "langchain-community>=0.3.21",
+    "langchain-core>=0.3.51",
+    "langchain-ollama>=0.3.1",
+    "langchain-openai>=0.3.12",
+    "mcp[cli]>=1.6.0",
+    "sentence-transformers>=4.0.2",
+]
