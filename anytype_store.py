@@ -1,16 +1,17 @@
 import httpx
 import json
 from typing import Any
+import os
 
 class AnyTypeStore:
-    def __init__(self):
+    def __init__(self, space_id: str | None, app_token: str | None):
         self._http_client = httpx.AsyncClient()
         self._api_url = "http://localhost:31009/v1"
-        self._app_token = ""
-        self.space_id = ""
+        self.app_token = os.environ.get('ANYTYPE_APP_TOKEN', None) if app_token == None else app_token
+        self.space_id = os.environ.get('ANYTYPE_SPACE_ID', None) if space_id == None else space_id
 
-    async def get_challenge(self, app_name: str) -> str:
-        request_url = f"{self._api_url}/auth/display_code?app_name={app_name}"
+    async def get_challenge(self) -> str:
+        request_url = f"{self._api_url}/auth/display_code?app_name=AnyTypeMcpServers"
         headers = {
             "Accept": "*/*",
             "Content-Type": "application/json"
@@ -37,7 +38,7 @@ class AnyTypeStore:
         request_url = f"{self._api_url}/spaces/{self.space_id}/objects?offset={offset}&limit={limit}"
         headers = {
             "Accept": "*/*",
-            "Authorization": f"Bearer {self._app_token}",
+            "Authorization": f"Bearer {self.app_token}",
             "Content-Type": "application/json"
         }
 
@@ -49,7 +50,7 @@ class AnyTypeStore:
         request_url = f"{self._api_url}/search?offset={offset}&limit={limit}"
         headers = {
             "Accept": "*/*",
-            "Authorization": f"Bearer {self._app_token}",
+            "Authorization": f"Bearer {self.app_token}",
             "Content-Type": "application/json"
         }
         payload = {"query": query}
@@ -62,7 +63,7 @@ class AnyTypeStore:
         request_url = f"{self._api_url}/spaces/{self.space_id if space_id is None else space_id}/objects/{document_id}"
         headers = {
             "Accept": "*/*",
-            "Authorization": f"Bearer {self._app_token}",
+            "Authorization": f"Bearer {self.app_token}",
             "Content-Type": "application/json"
         }
 
