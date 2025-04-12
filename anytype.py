@@ -17,12 +17,13 @@ from langchain_community.vectorstores.utils import filter_complex_metadata
 from anytype_store import AnyTypeStore
 from langchain_ollama import OllamaEmbeddings
 from fastmcp.prompts.base import UserMessage, AssistantMessage, Message
+from anytype_authenticator import AnytypeAuthenticator
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 mcp = FastMCP("anytype")
-store = AnyTypeStore()
+anytype_auth = AnytypeAuthenticator(AnyTypeStore(None, None))
 
 embeddings = OllamaEmbeddings(model="mxbai-embed-large")
 
@@ -61,6 +62,7 @@ async def ingest_documents() -> Dict[str, Any]:
     global vector_store, document_store, retriever
     documents = []
     offset = 0
+    store = anytype_auth.get_authenticated_store()
     while (True):
         results = []
         results = (await store.get_documents_async(offset, 50)).get("data", [])
@@ -254,6 +256,7 @@ async def document_q_a(query: str) -> list[Message]:
 @mcp.resource("anytype://{space_id}//{object_id}")
 async def get_object(space_id: str, object_id: str) -> str:
     """Get the contents of a single anytype object"""
+    store = anytype_auth.get_authenticated_store()
     return await store.get_document_async(object_id, space_id)
 
 if __name__ == "__main__":
