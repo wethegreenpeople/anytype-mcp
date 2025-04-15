@@ -1,5 +1,5 @@
 import asyncio
-from anytype import ingest_documents
+from anytype_old import ingest_documents
 
 async def main():
     # Optional: Run your authentication first, e.g. 
