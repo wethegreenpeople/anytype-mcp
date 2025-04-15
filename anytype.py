@@ -1,54 +1,92 @@
-import asyncio
-import os
 import logging
+import os
 from typing import List, Optional, Dict, Any
 
 from fastmcp import FastMCP, Context
-from langchain_community.vectorstores import Chroma
-from langchain_community.document_loaders import TextLoader
-from langchain_text_splitters import RecursiveCharacterTextSplitter
-from langchain_core.documents import Document
-from langchain_core.prompts import ChatPromptTemplate
-from langchain_core.output_parsers import StrOutputParser
-from langchain_core.runnables import RunnablePassthrough
-from langchain.retrievers import ParentDocumentRetriever
-from langchain.storage import InMemoryStore
-from langchain_community.vectorstores.utils import filter_complex_metadata
+from platformdirs import user_data_dir
 from anytype_store import AnyTypeStore
-from langchain_ollama import OllamaEmbeddings
 from fastmcp.prompts.base import UserMessage, AssistantMessage, Message
+import chromadb
+import nltk
+from chromadb.utils.embedding_functions import OllamaEmbeddingFunction
+from nltk.tokenize import sent_tokenize
+import shutil
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+
+# App-specific info
+app_name = "anytype-mcp"
+author = "John Singh"  # Used on Windows
+
+# Cross-platform directory for app data
+persist_dir = user_data_dir(app_name, author)
+chroma_dir = os.path.join(persist_dir, "chroma-data")
+nltk_dir = os.path.join(persist_dir, "nltk-data")
+
+# Ensure directories exist
+os.makedirs(chroma_dir, exist_ok=True)
+os.makedirs(nltk_dir, exist_ok=True)
+
 mcp = FastMCP("anytype")
 store = AnyTypeStore()
+nltk.download("punkt_tab", download_dir=nltk_dir)
 
-embeddings = OllamaEmbeddings(model="mxbai-embed-large")
+OLLAMA_MODEL = "mxbai-embed-large"
 
-text_splitter = RecursiveCharacterTextSplitter(
-    chunk_size=1024, 
-    chunk_overlap=100
-)
+client = chromadb.PersistentClient(path=chroma_dir)
+embedding_function = OllamaEmbeddingFunction(model_name=OLLAMA_MODEL)
+collection = client.get_or_create_collection(name="anytype_pages", embedding_function=embedding_function)
 
-# Prompt template for RAG
-rag_prompt = ChatPromptTemplate.from_template(
-    """
-    You are a helpful assistant answering questions based on the uploaded documents.
-    Context:
-    {context}
-    
-    Question:
-    {question}
-    
-    Answer concisely and accurately in three sentences or less. If you are not confident in any answer based on the provided context, say "I'm not sure about that" exactly, and then provide your best guess.
-    """
-)
+def flatten_anytype_blocks(page: str) -> str:
+    snippet = page.get("snippet", "")
+    blocks = page.get("blocks", [])
+    block_texts = [
+        block.get("text", {}).get("text", "")
+        for block in blocks
+        if "text" in block and block["text"].get("text")
+    ]
+    return "\n".join([snippet] + block_texts).strip()
 
-# Global vector store and retriever
-vector_store = None
-document_store = None
-retriever = None
+def split_into_sentences(text: str) -> list[str]:
+    return sent_tokenize(text)
+
+def chunk_sentences(sentences, max_len=500):
+    chunks = []
+    buffer = ""
+
+    for sent in sentences:
+        if len(buffer) + len(sent) <= max_len:
+            buffer += " " + sent
+        else:
+            chunks.append(buffer.strip())
+            buffer = sent
+
+    if buffer:
+        chunks.append(buffer.strip())
+
+    return chunks
+
+def ingest_anytype_documents(documents):
+    for doc in documents:
+        doc_id = doc["id"]
+        title = doc.get("name", "")
+        raw_text = flatten_anytype_blocks(doc)
+        setenences = split_into_sentences(raw_text)
+        chunks = chunk_sentences(setenences)
+
+        for i, chunk in enumerate(chunks):
+            collection.add(
+                documents=[chunk],
+                metadatas=[{
+                    "document_id": doc_id,
+                    "chunk_index": i,
+                    "space_id": doc.get("space_id"),
+                    "title": title
+                }],
+                ids=[f"{doc_id}_{i}"]
+            )
 
 @mcp.tool()
 async def ingest_documents() -> Dict[str, Any]:
@@ -58,98 +96,30 @@ async def ingest_documents() -> Dict[str, Any]:
     Returns:
         Ingestion summary
     """
-    global vector_store, document_store, retriever
     documents = []
     offset = 0
+    logger.info("Starting anytype ingestion")
     while (True):
         results = []
-        results = (await store.get_documents_async(offset, 50)).get("data", [])
+        results = (await store.query_documents_async(offset, 50, "")).get("data", [])
         documents.extend(results)
 
         if len(results) != 50: 
             break
 
         offset += 50
-    
-    # Convert Anytype documents to Langchain Documents
-    docs = []
-    for page in documents:
-        page_id = page.get("id", "")
-        title = page.get("name", "")
-        snippet = page.get("snippet", "")
 
-        # Extract visible text from blocks
-        blocks = page.get("blocks", [])
-        block_texts = [
-            block.get("text", {}).get("text", "")
-            for block in blocks
-            if "text" in block and block["text"].get("text")
-        ]
-        full_content = "\n".join([snippet] + block_texts).strip()
-
-        # Extract metadata
-        tags = [
-            tag["name"] for tag in page.get("details", []) 
-            if tag["id"] == "tags"
-            for tag in tag.get("details", {}).get("tags", [])
-        ]
-
-        author = next((
-            detail["details"]["details"].get("name", "Unknown")
-            for detail in page.get("details", [])
-            if detail["id"] == "created_by"
-        ), "Unknown")
-
-        created = next((
-            detail["details"].get("created_date")
-            for detail in page.get("details", [])
-            if detail["id"] == "created_date"
-        ), None)
-
-        docs.append(Document(
-            page_content=full_content,
-            metadata={
-                "id": page_id,
-                "title": title,
-                "author": author,
-                "created_date": created,
-                "tags": tags,
-                "space_id": page.get("space_id")
-            }
-        ))
-    
-    # Filter and preprocess documents
-    docs = filter_complex_metadata(docs)
-    
-    # Initialize vector store and retriever
-    vector_store = Chroma(
-        collection_name="full_documents",
-        embedding_function=embeddings
-    )
-    
-    document_store = InMemoryStore()
-    
-    retriever = ParentDocumentRetriever(
-        search_type="similarity_score_threshold",
-        search_kwargs={"k": 5, "score_threshold": 0.20},
-        vectorstore=vector_store,
-        docstore=document_store,
-        child_splitter=text_splitter,
-    )
-    
-    # Add documents to the retriever
-    retriever.add_documents(docs)
+    ingest_anytype_documents(documents)
     
     return {
         "status": "success",
-        "documents_ingested": len(docs),
-        "collection_name": "full_documents"
+        "documents_ingested": len(documents)
     }
 
 @mcp.tool()
 async def query_documents(query: str) -> Dict[str, Any]:
     """
-    Perform a semantic search and RAG query on the ingested anytype documents.
+    Perform a semantic search and RAG query on the ingested anytype documents. Lower similarity scores are better matches
     
     Args:
         query: Search query string
@@ -157,99 +127,95 @@ async def query_documents(query: str) -> Dict[str, Any]:
     Returns:
         Dictionary containing the answer and retrieved document references
     """
-    global retriever, vector_store, document_store
-    
-    # Validate vector store and retriever
-    if not retriever or not vector_store or not document_store:
-        return {
-            "error": "No documents have been ingested. Please use ingest_documents first.",
-            "status": "error"
-        }
-    
-    # Retrieve relevant documents
-    logger.info(f"Retrieving context for query: {query}")
-    retrieved_docs = retriever.invoke(query)
-    
-    if not retrieved_docs:
-        return {
-            "answer": "No relevant context found in the documents to answer your question.",
-            "references": [],
-            "status": "no_context"
-        }
-    
-    references = [
+    results = collection.query(
+        query_texts=[query],
+        n_results=5,
+        include=["metadatas", "distances", "documents"]
+    )
+
+    threshold = 0.3
+    all_references = [
         {
-            "id": doc.metadata.get('id'),
-            "title": doc.metadata.get('title', 'Untitled'),
-            "link": f"anytype://object?objectId={doc.metadata.get('id')}&spaceId={doc.metadata.get('space_id')}",
-            "similarity score": retriever.vectorstore.similarity_search_with_relevance_scores(query, k=1)[0][1],
-            "content": "\n\n".join(doc.page_content for doc in retrieved_docs)
+            "id": metadata.get("document_id"),
+            "title": metadata.get("title"),
+            "link": f"anytype://object?objectId={metadata.get('document_id')}&spaceId={metadata.get('space_id')}",
+            "similarity_score": distance,
+            "content": flatten_anytype_blocks((await store.get_document_async(metadata.get('document_id'), metadata.get('space_id')))["object"])
         }
-        for doc in retrieved_docs
+        for doc_text, metadata, distance in zip(
+            results["documents"][0],
+            results["metadatas"][0],
+            results["distances"][0]
+        )
     ]
     
+    filtered_references = [ref for ref in all_references if ref["similarity_score"] <= threshold]
+    
+    final_references = filtered_references if filtered_references else all_references
+    
     return {
-        "references": references,
+        "references": final_references,
         "status": "success"
     }
 
 @mcp.tool()
-async def clear_document_store() -> Dict[str, str]:
+async def get_ingestion_stats() -> Dict[str, Any]:
     """
-    Clear the current vector store and retriever.
+    Get statistics about the Chroma DB ingestion process.
     
     Returns:
-        Status of the clearing operation
+        Stats such as total chunks, unique documents, and model used.
     """
-    global vector_store, document_store, retriever
-    
-    vector_store = None
-    document_store = None
-    retriever = None
-    
-    return {
-        "status": "success",
-        "message": "Document store and retriever have been cleared."
+    from collections import Counter
+
+    stats = {
+        "collection_name": collection.name,
+        "embedding_model": getattr(embedding_function, "model_name", "unknown")
     }
 
-@mcp.resource("rag://model-info")
-def get_rag_model_info() -> Dict[str, Any]:
-    """
-    Provide information about the RAG models being used.
-    
-    Returns:
-        Dictionary with model details
-    """
-    return {
-        "embedding_model": "mxbai-embed-large",
-        "embedding_dimension": len(embeddings.embed_query("test"))
-    }
+    try:
+        all_docs = collection.get(include=["metadatas"], limit=100_000)
 
-@mcp.prompt()
-async def document_q_a(query: str) -> list[Message]:
-    """Ask a question and provide the context of your anytype documents for the response"""
+        metadatas_raw = all_docs.get("metadatas", [])
+        
+        # Handle both nested or flat metadata list structures
+        if isinstance(metadatas_raw, list) and all(isinstance(m, list) for m in metadatas_raw):
+            metadatas = metadatas_raw[0]
+        else:
+            metadatas = metadatas_raw
 
-    global retriever, vector_store, document_store
-    
-    # Validate vector store and retriever
-    if not retriever or not vector_store or not document_store:
+        doc_ids = [
+            meta.get("document_id")
+            for meta in metadatas
+            if isinstance(meta, dict) and meta.get("document_id")
+        ]
+
+        if not doc_ids:
+            stats.update({
+                "total_chunks": 0,
+                "unique_documents": 0,
+                "avg_chunks_per_document": 0.0
+            })
+            return stats
+
+        count_per_doc = Counter(doc_ids)
+
+        stats.update({
+            "total_chunks": len(doc_ids),
+            "unique_documents": len(count_per_doc),
+            "avg_chunks_per_document": round(sum(count_per_doc.values()) / len(count_per_doc), 2),
+            "chroma_dir": chroma_dir,
+            "nltk_dir": nltk_dir
+        })
+
+        return stats
+
+    except Exception as e:
+        logger.exception("Failed to get ingestion stats")
         return {
-            "error": "No documents have been ingested. Please use ingest_documents first.",
-            "status": "error"
+            "status": "error",
+            "message": str(e)
         }
-    
-    # Retrieve relevant documents
-    logger.info(f"Retrieving context for query: {query}")
-    retrieved_docs = retriever.invoke(query)
-
-    context = "\n\n".join(doc.page_content for doc in retrieved_docs)
-    
-    if not retrieved_docs:
-        return [AssistantMessage("No documents were retrieved for your query")]
-
-    return[
-        UserMessage(f"You are a helpful assistant answering questions based on the uploaded document.\n\n Context: {context} \n\nQuestion: {query} \n\nAnswer concisely and accurately in three sentences or less. If you are not confident in any answer based on the provided context, say 'I'm not sure about that' exactly, and then provide your best guess at the answer.")
-    ]
 
 @mcp.resource("anytype://{space_id}//{object_id}")
 async def get_object(space_id: str, object_id: str) -> str:
