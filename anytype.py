@@ -37,7 +37,6 @@ os.makedirs(nltk_dir, exist_ok=True)
 
 mcp = FastMCP("anytype", dependencies=[
     "chromadb>=1.0.4",
-    "fastmcp>=1.0",
     "httpx>=0.28.1",
     "mcp[cli]>=1.6.0",
     "nltk>=3.9.1",
@@ -105,6 +104,41 @@ def sanitize_metadata_value(v):
 def sanitize_metadata(metadata: dict) -> dict:
     return {k: sanitize_metadata_value(v) for k, v in metadata.items()}
 
+def extract_metadata(obj):
+    """
+    Extract all relevant metadata from an Anytype object's properties
+    """
+    metadata = {}
+    
+    for prop in obj.get('properties', []):
+        prop_id = prop.get('id')
+        prop_name = prop.get('name')
+        prop_format = prop.get('format')
+        
+        # Handle multi-select properties
+        if prop_format == 'multi_select':
+            metadata[prop_id] = [
+                tag.get('name', '') for tag in prop.get('multi_select', [])
+            ]
+        
+        # Handle date properties
+        elif prop_format == 'date':
+            metadata[prop_id] = prop.get('date')
+        
+        # Handle text properties
+        elif prop_format == 'text':
+            metadata[prop_id] = prop.get('text')
+        
+        # Handle object properties
+        elif prop_format == 'object':
+            metadata[prop_id] = prop.get('object')
+        
+        # Add the property name as a key as well for more readable queries
+        if prop_name and prop_name != prop_id:
+            metadata[prop_name] = metadata.get(prop_id)
+    
+    return metadata
+
 def ingest_anytype_documents(documents):
     total_docs = len(documents)
     print(f"Starting ingestion of {total_docs} documents...")
@@ -114,42 +148,47 @@ def ingest_anytype_documents(documents):
     updated_cache = ingest_cache.copy()
 
     for idx, doc in enumerate(documents):
-        doc_id = doc["id"]
-        title = doc.get("name", "")
+        obj = doc
+        
+        doc_id = obj.get("id")
+        title = obj.get("name", "")
 
-        # Extract last_modified_date
-        last_modified_date = None
-        for d in doc.get("details", []):
-            if "last_modified_date" in d.get("details", {}):
-                last_modified_date = d["details"]["last_modified_date"]
+        # Extract metadata from properties
+        properties = {prop['id']: prop for prop in obj.get('properties', [])}
+        
+        # Extract dates
+        created_date = properties.get('created_date', {}).get('date')
+        last_modified_date = properties.get('last_modified_date', {}).get('date')
 
-        # ✅ Skip if already ingested with same last_modified_date
-        if doc_id in ingest_cache and ingest_cache[doc_id] == last_modified_date:
+        if collection.count() > 0 and doc_id in ingest_cache and ingest_cache[doc_id] == last_modified_date:
             print(f"Skipping '{title}' (unchanged)")
             continue
 
-        # Extract other metadata
-        tags = [tag["name"] for tag in doc.get("details", {}).get("tags", {}).get("tags", [])]
-        created_date = next((d["details"]["created_date"] for d in doc.get("details", []) if "created_date" in d.get("details", {})), None)
+        # Extract tags
+        tags_prop = next((prop for prop in obj.get('properties', []) if prop['id'] == 'tag'), None)
+        tags = tags_prop.get('multi_select', []) if tags_prop else []
+        tags = [tag.get('name', '') for tag in tags]
 
-        # Embed metadata in chunk
-        raw_text = flatten_anytype_blocks(doc)
+        # Extract space_id
+        space_id = obj.get('space_id')
+
+        # Flatten text content
+        raw_text = flatten_anytype_blocks(obj)
         full_text = f"{raw_text}"
         sentences = split_into_sentences(full_text)
         chunks = chunk_sentences(sentences)
 
         collection.delete(where={"document_id": doc_id})
+        metadata = extract_metadata(obj)
         for i, chunk in enumerate(chunks):
             collection.add(
                 documents=[chunk],
-                metadatas=[sanitize_metadata({
+                 metadatas=[sanitize_metadata({
                     "document_id": doc_id,
                     "chunk_index": i,
-                    "space_id": doc.get("space_id"),
+                    "space_id": space_id,
                     "title": title,
-                    "tags": tags,
-                    "created_date": created_date,
-                    "last_modified_date": last_modified_date
+                    **metadata  # This unpacks all the extracted metadata
                 })],
                 ids=[f"{doc_id}_{i}"]
             )
@@ -203,19 +242,31 @@ async def ingest_documents() -> Dict[str, Any]:
     }
 
 @mcp.tool()
-async def query_documents(query: str) -> Dict[str, Any]:
+async def query_documents(
+    query: str
+) -> Dict[str, Any]:
     """
     Perform a semantic search and RAG query on the ingested anytype documents.
     Lower similarity scores are better matches.
 
+    Args:
+        query: The semantic search query string
+        metadata_filter: Optional dictionary of metadata fields to filter with regex
+
+    Example:
+        await query_documents("programming concepts", {"tags": r"programming"})
+
     Returns:
         Dictionary containing the answer and retrieved document references
     """
-    results = collection.query(
-        query_texts=[query],
-        n_results=10,
-        include=["metadatas", "distances", "documents"]
-    )
+    # Prepare the base query
+    query_kwargs = {
+        "query_texts": [query],
+        "n_results": 10,
+        "include": ["metadatas", "distances", "documents"]
+    }
+
+    results = collection.query(**query_kwargs)
 
     threshold = 0.4
     store = anytype_auth.get_authenticated_store()
@@ -244,7 +295,8 @@ async def query_documents(query: str) -> Dict[str, Any]:
                 "title": title,
                 "link": f"anytype://object?objectId={doc_id}&spaceId={space_id}",
                 "similarity_score": distance,
-                "content": flatten_anytype_blocks(full_doc["object"])
+                "content": flatten_anytype_blocks(full_doc["object"]),
+                "metadatas": metadata
             })
         else:
             # Otherwise include just the chunk
@@ -253,7 +305,8 @@ async def query_documents(query: str) -> Dict[str, Any]:
                 "title": title,
                 "link": f"anytype://object?objectId={doc_id}&spaceId={space_id}",
                 "similarity_score": distance,
-                "chunk": doc_text
+                "chunk": doc_text,
+                "metadatas": metadata
             })
 
     return {
@@ -340,9 +393,16 @@ async def clear_ingestion() -> Dict[str, Any]:
     
 
 
-@mcp.resource("anytype://{space_id}//{object_id}")
+@mcp.tool()
 async def get_object(space_id: str, object_id: str) -> str:
-    """Get the contents of a single anytype object"""
+    """Get the contents of a single anytype object
+
+        Can be used to get extra information about objects that are stored in, or related to other objects. Can also be used to get the full document from only a chunk
+        
+        Args:
+            space_id: The space ID of the object
+            object_id: The object's ID
+    """
     store = anytype_auth.get_authenticated_store()
     return await store.get_document_async(object_id, space_id)
 
