@@ -1,3 +1,4 @@
+from collections import Counter
 import json
 import logging
 import os
@@ -94,9 +95,19 @@ def save_ingest_cache(cache):
     with open(cache_path, "w") as f:
         json.dump(cache, f, indent=2)
 
+def sanitize_metadata_value(v):
+    if v is None:
+        return ""
+    if isinstance(v, list):
+        return ", ".join(map(str, v))  # in case we missed a list
+    return v
+
+def sanitize_metadata(metadata: dict) -> dict:
+    return {k: sanitize_metadata_value(v) for k, v in metadata.items()}
+
 def ingest_anytype_documents(documents):
     total_docs = len(documents)
-    print(f"🚀 Starting ingestion of {total_docs} documents...")
+    print(f"Starting ingestion of {total_docs} documents...")
 
     ingest_cache = load_ingest_cache()
     start_time = time.time()
@@ -114,7 +125,7 @@ def ingest_anytype_documents(documents):
 
         # ✅ Skip if already ingested with same last_modified_date
         if doc_id in ingest_cache and ingest_cache[doc_id] == last_modified_date:
-            print(f"⏭️ Skipping '{title}' (unchanged)")
+            print(f"Skipping '{title}' (unchanged)")
             continue
 
         # Extract other metadata
@@ -122,16 +133,16 @@ def ingest_anytype_documents(documents):
         created_date = next((d["details"]["created_date"] for d in doc.get("details", []) if "created_date" in d.get("details", {})), None)
 
         # Embed metadata in chunk
-        meta_prefix = f"[Tags: {', '.join(tags)}] [Created: {created_date}] [Updated: {last_modified_date}]\n"
         raw_text = flatten_anytype_blocks(doc)
-        full_text = f"{meta_prefix}{raw_text}"
+        full_text = f"{raw_text}"
         sentences = split_into_sentences(full_text)
         chunks = chunk_sentences(sentences)
 
+        collection.delete(where={"document_id": doc_id})
         for i, chunk in enumerate(chunks):
             collection.add(
                 documents=[chunk],
-                metadatas=[{
+                metadatas=[sanitize_metadata({
                     "document_id": doc_id,
                     "chunk_index": i,
                     "space_id": doc.get("space_id"),
@@ -139,7 +150,7 @@ def ingest_anytype_documents(documents):
                     "tags": tags,
                     "created_date": created_date,
                     "last_modified_date": last_modified_date
-                }],
+                })],
                 ids=[f"{doc_id}_{i}"]
             )
 
@@ -153,13 +164,13 @@ def ingest_anytype_documents(documents):
             avg_time_per_doc = elapsed / docs_done
             est_time_left = avg_time_per_doc * docs_left
 
-            print(f"✅ Ingested {docs_done}/{total_docs} docs "
+            print(f"Ingested {docs_done}/{total_docs} docs "
                   f"({(docs_done / total_docs) * 100:.1f}%) | "
-                  f"⏱️ Elapsed: {elapsed:.1f}s | "
-                  f"🕒 ETA: {est_time_left:.1f}s")
+                  f"Elapsed: {elapsed:.1f}s | "
+                  f"ETA: {est_time_left:.1f}s")
 
     save_ingest_cache(updated_cache)
-    print("💾 Ingest cache updated!")
+    print("Ingest cache updated!")
 
 @mcp.tool()
 async def ingest_documents() -> Dict[str, Any]:
@@ -194,61 +205,73 @@ async def ingest_documents() -> Dict[str, Any]:
 @mcp.tool()
 async def query_documents(query: str) -> Dict[str, Any]:
     """
-    Perform a semantic search and RAG query on the ingested anytype documents. Lower similarity scores are better matches
-    
-    Args:
-        query: Search query string
-    
+    Perform a semantic search and RAG query on the ingested anytype documents.
+    Lower similarity scores are better matches.
+
     Returns:
         Dictionary containing the answer and retrieved document references
     """
     results = collection.query(
         query_texts=[query],
-        n_results=5,
+        n_results=10,
         include=["metadatas", "distances", "documents"]
     )
 
-    threshold = 0.3
+    threshold = 0.4
     store = anytype_auth.get_authenticated_store()
-    all_references = [
-        {
-            "id": metadata.get("document_id"),
-            "title": metadata.get("title"),
-            "link": f"anytype://object?objectId={metadata.get('document_id')}&spaceId={metadata.get('space_id')}",
-            "similarity_score": distance,
-            "content": flatten_anytype_blocks((await store.get_document_async(metadata.get('document_id'), metadata.get('space_id')))["object"])
-        }
-        for doc_text, metadata, distance in zip(
-            results["documents"][0],
-            results["metadatas"][0],
-            results["distances"][0]
-        )
-    ]
-    
-    filtered_references = [ref for ref in all_references if ref["similarity_score"] <= threshold]
-    
-    final_references = filtered_references if filtered_references else all_references
-    
+
+    seen_ids = set()
+    final_references = []
+
+    for i, (doc_text, metadata, distance) in enumerate(zip(
+        results["documents"][0],
+        results["metadatas"][0],
+        results["distances"][0]
+    )):
+        doc_id = metadata.get("document_id")
+        space_id = metadata.get("space_id")
+        title = metadata.get("title")
+
+        if doc_id in seen_ids:
+            continue
+        seen_ids.add(doc_id)
+
+        if i == 0 or distance <= threshold:
+            # First best match or under threshold: include full doc
+            full_doc = await store.get_document_async(doc_id, space_id)
+            final_references.append({
+                "id": doc_id,
+                "title": title,
+                "link": f"anytype://object?objectId={doc_id}&spaceId={space_id}",
+                "similarity_score": distance,
+                "content": flatten_anytype_blocks(full_doc["object"])
+            })
+        else:
+            # Otherwise include just the chunk
+            final_references.append({
+                "id": doc_id,
+                "title": title,
+                "link": f"anytype://object?objectId={doc_id}&spaceId={space_id}",
+                "similarity_score": distance,
+                "chunk": doc_text
+            })
+
     return {
-        "references": final_references,
-        "status": "success"
+        "status": "success",
+        "references": final_references
     }
 
-@mcp.tool()
-async def get_ingestion_stats() -> Dict[str, Any]:
-    """
-    Get statistics about the Chroma DB ingestion process.
-    
-    Returns:
-        Stats such as total chunks, unique documents, and model used.
-    """
-    from collections import Counter
-
+def get_stats():
     stats = {
         "collection_name": collection.name,
         "embedding_model": getattr(embedding_function, "model_name", "unknown")
     }
 
+    if collection.count() == 0:
+        return {
+            "status": "success",
+            "message": "No ingestion started"
+        }
     try:
         all_docs = collection.get(include=["metadatas"], limit=100_000)
 
@@ -283,7 +306,6 @@ async def get_ingestion_stats() -> Dict[str, Any]:
             "chroma_dir": chroma_dir,
             "nltk_dir": nltk_dir
         })
-
         return stats
 
     except Exception as e:
@@ -292,6 +314,31 @@ async def get_ingestion_stats() -> Dict[str, Any]:
             "status": "error",
             "message": str(e)
         }
+
+@mcp.tool()
+async def get_ingestion_stats() -> Dict[str, Any]:
+    """
+    Get statistics about the Chroma DB ingestion process.
+    
+    Returns:
+        Stats such as total chunks, unique documents, and model used.
+    """
+    return get_stats()
+
+@mcp.tool()
+async def clear_ingestion() -> Dict[str, Any]:
+    """
+    Clear previous ingestion
+    
+    Returns:
+        Stats such as total chunks, unique documents, and model used.
+    """
+    global collection
+    client.delete_collection(name="anytype_pages")
+    collection = client.get_or_create_collection(name="anytype_pages", embedding_function=embedding_function)
+    return get_stats()
+    
+
 
 @mcp.resource("anytype://{space_id}//{object_id}")
 async def get_object(space_id: str, object_id: str) -> str:
