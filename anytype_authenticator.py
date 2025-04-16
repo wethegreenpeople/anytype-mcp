@@ -8,18 +8,17 @@ from anytype_store import AnyTypeStore
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-CONFIG_FILE = os.path.join(os.getcwd(), "anytype_mcp_config.json")
-
 class AnytypeAuthenticator:
-    def __init__(self, store: AnyTypeStore):
+    def __init__(self, store: AnyTypeStore, config_file: str):
         self.store = store
+        self.config_file = config_file
         self.config = self._load_config()
 
     def _load_config(self) -> Dict[str, Any]:
         """Load configuration from file, creating it if it doesn't exist."""
         try:
-            if os.path.exists(CONFIG_FILE):
-                with open(CONFIG_FILE, 'r') as f:
+            if os.path.exists(self.config_file):
+                with open(self.config_file, 'r') as f:
                     return json.load(f)
         except (json.JSONDecodeError, IOError):
             pass
@@ -28,7 +27,7 @@ class AnytypeAuthenticator:
     def _save_config(self):
         """Save configuration to file."""
         try:
-            with open(CONFIG_FILE, 'w') as f:
+            with open(self.config_file, 'w') as f:
                 json.dump(self.config, f)
         except IOError as e:
             logger.error(f"Failed to save configuration: {e}")
