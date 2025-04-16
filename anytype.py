@@ -1,3 +1,4 @@
+import json
 import logging
 import os
 import time
@@ -27,6 +28,7 @@ persist_dir = user_data_dir(app_name, author)
 chroma_dir = os.path.join(persist_dir, "chroma-data")
 nltk_dir = os.path.join(persist_dir, "nltk-data")
 config_path = os.path.join(persist_dir, "anytype_config.json")
+cache_path = os.path.join(persist_dir, "embed_cache.json")
 
 # Ensure directories exist
 os.makedirs(chroma_dir, exist_ok=True)
@@ -81,17 +83,49 @@ def chunk_sentences(sentences, max_len=500):
 
     return chunks
 
+
+def load_ingest_cache():
+    if os.path.exists(cache_path):
+        with open(cache_path, "r") as f:
+            return json.load(f)
+    return {}
+
+def save_ingest_cache(cache):
+    with open(cache_path, "w") as f:
+        json.dump(cache, f, indent=2)
+
 def ingest_anytype_documents(documents):
     total_docs = len(documents)
     print(f"🚀 Starting ingestion of {total_docs} documents...")
 
+    ingest_cache = load_ingest_cache()
     start_time = time.time()
+    updated_cache = ingest_cache.copy()
 
     for idx, doc in enumerate(documents):
         doc_id = doc["id"]
         title = doc.get("name", "")
+
+        # Extract last_modified_date
+        last_modified_date = None
+        for d in doc.get("details", []):
+            if "last_modified_date" in d.get("details", {}):
+                last_modified_date = d["details"]["last_modified_date"]
+
+        # ✅ Skip if already ingested with same last_modified_date
+        if doc_id in ingest_cache and ingest_cache[doc_id] == last_modified_date:
+            print(f"⏭️ Skipping '{title}' (unchanged)")
+            continue
+
+        # Extract other metadata
+        tags = [tag["name"] for tag in doc.get("details", {}).get("tags", {}).get("tags", [])]
+        created_date = next((d["details"]["created_date"] for d in doc.get("details", []) if "created_date" in d.get("details", {})), None)
+
+        # Embed metadata in chunk
+        meta_prefix = f"[Tags: {', '.join(tags)}] [Created: {created_date}] [Updated: {last_modified_date}]\n"
         raw_text = flatten_anytype_blocks(doc)
-        sentences = split_into_sentences(raw_text)
+        full_text = f"{meta_prefix}{raw_text}"
+        sentences = split_into_sentences(full_text)
         chunks = chunk_sentences(sentences)
 
         for i, chunk in enumerate(chunks):
@@ -101,12 +135,17 @@ def ingest_anytype_documents(documents):
                     "document_id": doc_id,
                     "chunk_index": i,
                     "space_id": doc.get("space_id"),
-                    "title": title
+                    "title": title,
+                    "tags": tags,
+                    "created_date": created_date,
+                    "last_modified_date": last_modified_date
                 }],
                 ids=[f"{doc_id}_{i}"]
             )
 
-        # Log every 10 documents
+        updated_cache[doc_id] = last_modified_date
+
+        # Log progress
         if (idx + 1) % 10 == 0 or (idx + 1) == total_docs:
             elapsed = time.time() - start_time
             docs_done = idx + 1
@@ -115,9 +154,12 @@ def ingest_anytype_documents(documents):
             est_time_left = avg_time_per_doc * docs_left
 
             print(f"✅ Ingested {docs_done}/{total_docs} docs "
-                f"({(docs_done / total_docs) * 100:.1f}%) | "
-                f"⏱️ Elapsed: {elapsed:.1f}s | "
-                f"🕒 ETA: {est_time_left:.1f}s")
+                  f"({(docs_done / total_docs) * 100:.1f}%) | "
+                  f"⏱️ Elapsed: {elapsed:.1f}s | "
+                  f"🕒 ETA: {est_time_left:.1f}s")
+
+    save_ingest_cache(updated_cache)
+    print("💾 Ingest cache updated!")
 
 @mcp.tool()
 async def ingest_documents() -> Dict[str, Any]:
