@@ -1,5 +1,6 @@
 import logging
 import os
+import time
 from typing import List, Optional, Dict, Any
 
 from fastmcp import FastMCP, Context
@@ -15,7 +16,7 @@ import shutil
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
-
+logging.getLogger("httpx").setLevel(logging.WARNING)
 
 # App-specific info
 app_name = "anytype-mcp"
@@ -25,14 +26,25 @@ author = "John Singh"  # Used on Windows
 persist_dir = user_data_dir(app_name, author)
 chroma_dir = os.path.join(persist_dir, "chroma-data")
 nltk_dir = os.path.join(persist_dir, "nltk-data")
+config_path = os.path.join(persist_dir, "anytype_config.json")
 
 # Ensure directories exist
 os.makedirs(chroma_dir, exist_ok=True)
 os.makedirs(nltk_dir, exist_ok=True)
 
-mcp = FastMCP("anytype")
-anytype_auth = AnytypeAuthenticator(AnyTypeStore(None, None))
+mcp = FastMCP("anytype", dependencies=[
+    "chromadb>=1.0.4",
+    "fastmcp>=1.0",
+    "httpx>=0.28.1",
+    "mcp[cli]>=1.6.0",
+    "nltk>=3.9.1",
+    "ollama>=0.4.7",
+    "platformdirs>=4.3.7",
+    "sentence-transformers>=4.0.2",
+])
+anytype_auth = AnytypeAuthenticator(AnyTypeStore(None, None), config_path)
 nltk.download("punkt_tab", download_dir=nltk_dir)
+nltk.data.path.append(nltk_dir)
 
 OLLAMA_MODEL = "mxbai-embed-large"
 
@@ -70,12 +82,17 @@ def chunk_sentences(sentences, max_len=500):
     return chunks
 
 def ingest_anytype_documents(documents):
-    for doc in documents:
+    total_docs = len(documents)
+    print(f"🚀 Starting ingestion of {total_docs} documents...")
+
+    start_time = time.time()
+
+    for idx, doc in enumerate(documents):
         doc_id = doc["id"]
         title = doc.get("name", "")
         raw_text = flatten_anytype_blocks(doc)
-        setenences = split_into_sentences(raw_text)
-        chunks = chunk_sentences(setenences)
+        sentences = split_into_sentences(raw_text)
+        chunks = chunk_sentences(sentences)
 
         for i, chunk in enumerate(chunks):
             collection.add(
@@ -89,10 +106,24 @@ def ingest_anytype_documents(documents):
                 ids=[f"{doc_id}_{i}"]
             )
 
+        # Log every 10 documents
+        if (idx + 1) % 10 == 0 or (idx + 1) == total_docs:
+            elapsed = time.time() - start_time
+            docs_done = idx + 1
+            docs_left = total_docs - docs_done
+            avg_time_per_doc = elapsed / docs_done
+            est_time_left = avg_time_per_doc * docs_left
+
+            print(f"✅ Ingested {docs_done}/{total_docs} docs "
+                f"({(docs_done / total_docs) * 100:.1f}%) | "
+                f"⏱️ Elapsed: {elapsed:.1f}s | "
+                f"🕒 ETA: {est_time_left:.1f}s")
+
 @mcp.tool()
 async def ingest_documents() -> Dict[str, Any]:
     """
     Ingest anytype documents from the API into the vector store for RAG, semantic searches, and for additional information in other tools on this MCP server.
+    Ingestion could have been done prior, so don't start the ingestion process unless explicitly asked to
     
     Returns:
         Ingestion summary
@@ -100,6 +131,7 @@ async def ingest_documents() -> Dict[str, Any]:
     documents = []
     offset = 0
     logger.info("Starting anytype ingestion")
+    store = anytype_auth.get_authenticated_store()
     while (True):
         results = []
         results = (await store.query_documents_async(offset, 50, "")).get("data", [])
@@ -135,6 +167,7 @@ async def query_documents(query: str) -> Dict[str, Any]:
     )
 
     threshold = 0.3
+    store = anytype_auth.get_authenticated_store()
     all_references = [
         {
             "id": metadata.get("document_id"),
