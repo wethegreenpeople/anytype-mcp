@@ -5,16 +5,14 @@ import os
 import time
 from typing import List, Optional, Dict, Any
 
-from fastmcp import FastMCP, Context
+from fastmcp import FastMCP
 from platformdirs import user_data_dir
 from anytype_store import AnyTypeStore
-from fastmcp.prompts.base import UserMessage, AssistantMessage, Message
 from anytype_authenticator import AnytypeAuthenticator
 import chromadb
 import nltk
 from chromadb.utils.embedding_functions import OllamaEmbeddingFunction
 from nltk.tokenize import sent_tokenize
-import shutil
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
