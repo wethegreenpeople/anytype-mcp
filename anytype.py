@@ -34,13 +34,12 @@ os.makedirs(chroma_dir, exist_ok=True)
 os.makedirs(nltk_dir, exist_ok=True)
 
 mcp = FastMCP("anytype", dependencies=[
-    "chromadb>=1.0.4",
-    "httpx>=0.28.1",
-    "mcp[cli]>=1.6.0",
-    "nltk>=3.9.1",
-    "ollama>=0.4.7",
-    "platformdirs>=4.3.7",
-    "sentence-transformers>=4.0.2",
+    "chromadb",
+    "httpx",
+    "nltk",
+    "ollama",
+    "platformdirs",
+    "sentence-transformers",
 ])
 anytype_auth = AnytypeAuthenticator(AnyTypeStore(None, None), config_path)
 nltk.download("punkt_tab", download_dir=nltk_dir)
@@ -139,7 +138,7 @@ def extract_metadata(obj):
 
 def ingest_anytype_documents(documents):
     total_docs = len(documents)
-    print(f"Starting ingestion of {total_docs} documents...")
+    logger.info(f"Starting ingestion of {total_docs} documents...")
 
     ingest_cache = load_ingest_cache()
     start_time = time.time()
@@ -159,7 +158,7 @@ def ingest_anytype_documents(documents):
         last_modified_date = properties.get('last_modified_date', {}).get('date')
 
         if collection.count() > 0 and doc_id in ingest_cache and ingest_cache[doc_id] == last_modified_date:
-            print(f"Skipping '{title}' (unchanged)")
+            logger.debug(f"Skipping '{title}' (unchanged)")
             continue
 
         # Extract tags
@@ -201,13 +200,13 @@ def ingest_anytype_documents(documents):
             avg_time_per_doc = elapsed / docs_done
             est_time_left = avg_time_per_doc * docs_left
 
-            print(f"Ingested {docs_done}/{total_docs} docs "
+            logger.info(f"Ingested {docs_done}/{total_docs} docs "
                   f"({(docs_done / total_docs) * 100:.1f}%) | "
                   f"Elapsed: {elapsed:.1f}s | "
                   f"ETA: {est_time_left:.1f}s")
 
     save_ingest_cache(updated_cache)
-    print("Ingest cache updated!")
+    logger.info("Ingest cache updated!")
 
 @mcp.tool()
 async def ingest_documents() -> Dict[str, Any]:
