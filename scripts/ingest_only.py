@@ -1,5 +1,11 @@
 import asyncio
 import os
+import sys
+from pathlib import Path
+
+# Add the parent directory to the module search path
+parent_dir = str(Path(__file__).parent.parent.absolute())
+sys.path.append(parent_dir)
 
 import nltk
 from platformdirs import user_data_dir
