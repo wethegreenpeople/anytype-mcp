@@ -22,7 +22,8 @@ class AnyTypeTools():
 
     async def query_anytype_documents(
         self,
-        query: str
+        query: str,
+        results_limit: int = 5
     ) -> Dict[str, Any]:
         """
         Perform a semantic search and RAG query on the ingested anytype documents.
@@ -30,7 +31,7 @@ class AnyTypeTools():
 
         Args:
             query: The semantic search query string
-            metadata_filter: Optional dictionary of metadata fields to filter with regex
+            results_limit: How many results to return from the query (default 5)
 
         Example:
             await query_documents("programming concepts", {"tags": r"programming"})
@@ -41,7 +42,7 @@ class AnyTypeTools():
         # Prepare the base query
         query_kwargs = {
             "query_texts": [query],
-            "n_results": 10,
+            "n_results": results_limit,
             "include": ["metadatas", "distances", "documents"]
         }
 
