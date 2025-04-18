@@ -3,7 +3,7 @@ import os
 
 import nltk
 from platformdirs import user_data_dir
-from anytype import ingest_documents
+from server import ingest_documents
 from utils.anytype_authenticator import AnytypeAuthenticator
 from anytype_api.anytype_store import AnyTypeStore
 

@@ -3,7 +3,7 @@ import json
 import logging
 import os
 import time
-from typing import List, Optional, Dict, Any
+from typing import Dict, Any
 
 from fastmcp import FastMCP
 from platformdirs import user_data_dir
