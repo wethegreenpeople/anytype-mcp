@@ -3,8 +3,9 @@ import logging
 import os
 import time
 from typing import Dict, List, Optional, Union, Any
+import chromadb
 from nltk.tokenize import sent_tokenize
-from chromadb import Collection, Client
+from chromadb.utils.embedding_functions import OllamaEmbeddingFunction
 
 
 logging.basicConfig(level=logging.INFO)
@@ -12,10 +13,17 @@ logger = logging.getLogger(__name__)
 logging.getLogger("httpx").setLevel(logging.WARNING)
 
 class EmbeddingUtils:
-    def __init__(self, client: Client, collection: Collection, cache_path: str) -> None:
-        self.client = client
-        self.collection = collection
+    def __init__(self, chroma_dir: str, cache_path: str) -> None:
+        OLLAMA_MODEL = "mxbai-embed-large"
+
+        self.chroma_dir = chroma_dir
+        self.client = chromadb.PersistentClient(path=chroma_dir)
+
+        # Initialize ChromaDB client
+        self.embedding_function = OllamaEmbeddingFunction(model_name=OLLAMA_MODEL)
+        self.collection = self.client.get_or_create_collection(name="anytype_pages", embedding_function=self.embedding_function)
         self.cache_path = cache_path
+
         self.cache: Dict[str, str] = self._load_cache()
     
     def _load_cache(self) -> Dict[str, str]:
