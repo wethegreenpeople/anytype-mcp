@@ -3,7 +3,7 @@ import os
 import json
 from typing import Dict, Any
 
-from anytype_store import AnyTypeStore
+from anytype_api.anytype_store import AnyTypeStore
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)

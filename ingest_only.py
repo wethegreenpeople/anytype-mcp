@@ -5,7 +5,7 @@ import nltk
 from platformdirs import user_data_dir
 from anytype import ingest_documents
 from anytype_authenticator import AnytypeAuthenticator
-from anytype_store import AnyTypeStore
+from anytype_api.anytype_store import AnyTypeStore
 
 async def main():
     # Now run ingestion
