@@ -12,17 +12,21 @@ from utils.anytype_authenticator import AnytypeAuthenticator
 import chromadb
 import nltk
 from chromadb.utils.embedding_functions import OllamaEmbeddingFunction
-from nltk.tokenize import sent_tokenize
+from utils.embedding_utils import EmbeddingUtils
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 logging.getLogger("httpx").setLevel(logging.WARNING)
 
+# Constants
+OLLAMA_MODEL = "mxbai-embed-large"
+TOKENIZER = "punkt_tab"
+
 # App-specific info
 app_name = "anytype-mcp"
 author = "John Singh"  # Used on Windows
 
-# Cross-platform directory for app data
+# Cross-platform directories for app data
 persist_dir = user_data_dir(app_name, author)
 chroma_dir = os.path.join(persist_dir, "chroma-data")
 nltk_dir = os.path.join(persist_dir, "nltk-data")
@@ -33,6 +37,7 @@ cache_path = os.path.join(persist_dir, "embed_cache.json")
 os.makedirs(chroma_dir, exist_ok=True)
 os.makedirs(nltk_dir, exist_ok=True)
 
+# Initialize FastMCP
 mcp = FastMCP("anytype", dependencies=[
     "chromadb",
     "httpx",
@@ -41,172 +46,19 @@ mcp = FastMCP("anytype", dependencies=[
     "platformdirs",
     "sentence-transformers",
 ])
-anytype_auth = AnytypeAuthenticator(AnyTypeStore(None, None), config_path)
-nltk.download("punkt_tab", download_dir=nltk_dir)
+
+# Initialize NLTK tokenizer
+nltk.download(TOKENIZER, download_dir=nltk_dir)
 nltk.data.path.append(nltk_dir)
 
-OLLAMA_MODEL = "mxbai-embed-large"
-
+# Initialize ChromaDB client
 client = chromadb.PersistentClient(path=chroma_dir)
 embedding_function = OllamaEmbeddingFunction(model_name=OLLAMA_MODEL)
 collection = client.get_or_create_collection(name="anytype_pages", embedding_function=embedding_function)
 
-def flatten_anytype_blocks(page: str) -> str:
-    snippet = page.get("snippet", "")
-    blocks = page.get("blocks", [])
-    block_texts = [
-        block.get("text", {}).get("text", "")
-        for block in blocks
-        if "text" in block and block["text"].get("text")
-    ]
-    return "\n".join([snippet] + block_texts).strip()
-
-def split_into_sentences(text: str) -> list[str]:
-    return sent_tokenize(text)
-
-def chunk_sentences(sentences, max_len=500):
-    chunks = []
-    buffer = ""
-
-    for sent in sentences:
-        if len(buffer) + len(sent) <= max_len:
-            buffer += " " + sent
-        else:
-            chunks.append(buffer.strip())
-            buffer = sent
-
-    if buffer:
-        chunks.append(buffer.strip())
-
-    return chunks
-
-
-def load_ingest_cache():
-    if os.path.exists(cache_path):
-        with open(cache_path, "r") as f:
-            return json.load(f)
-    return {}
-
-def save_ingest_cache(cache):
-    with open(cache_path, "w") as f:
-        json.dump(cache, f, indent=2)
-
-def sanitize_metadata_value(v):
-    if v is None:
-        return ""
-    if isinstance(v, list):
-        return ", ".join(map(str, v))  # in case we missed a list
-    return v
-
-def sanitize_metadata(metadata: dict) -> dict:
-    return {k: sanitize_metadata_value(v) for k, v in metadata.items()}
-
-def extract_metadata(obj):
-    """
-    Extract all relevant metadata from an Anytype object's properties
-    """
-    metadata = {}
-    
-    for prop in obj.get('properties', []):
-        prop_id = prop.get('id')
-        prop_name = prop.get('name')
-        prop_format = prop.get('format')
-        
-        # Handle multi-select properties
-        if prop_format == 'multi_select':
-            metadata[prop_id] = [
-                tag.get('name', '') for tag in prop.get('multi_select', [])
-            ]
-        
-        # Handle date properties
-        elif prop_format == 'date':
-            metadata[prop_id] = prop.get('date')
-        
-        # Handle text properties
-        elif prop_format == 'text':
-            metadata[prop_id] = prop.get('text')
-        
-        # Handle object properties
-        elif prop_format == 'object':
-            metadata[prop_id] = prop.get('object')
-        
-        # Add the property name as a key as well for more readable queries
-        if prop_name and prop_name != prop_id:
-            metadata[prop_name] = metadata.get(prop_id)
-    
-    return metadata
-
-def ingest_anytype_documents(documents):
-    total_docs = len(documents)
-    logger.info(f"Starting ingestion of {total_docs} documents...")
-
-    ingest_cache = load_ingest_cache()
-    start_time = time.time()
-    updated_cache = ingest_cache.copy()
-
-    for idx, doc in enumerate(documents):
-        obj = doc
-        
-        doc_id = obj.get("id")
-        title = obj.get("name", "")
-
-        # Extract metadata from properties
-        properties = {prop['id']: prop for prop in obj.get('properties', [])}
-        
-        # Extract dates
-        created_date = properties.get('created_date', {}).get('date')
-        last_modified_date = properties.get('last_modified_date', {}).get('date')
-
-        if collection.count() > 0 and doc_id in ingest_cache and ingest_cache[doc_id] == last_modified_date:
-            logger.debug(f"Skipping '{title}' (unchanged)")
-            continue
-
-        # Extract tags
-        tags_prop = next((prop for prop in obj.get('properties', []) if prop['id'] == 'tag'), None)
-        tags = tags_prop.get('multi_select', []) if tags_prop else []
-        tags = [tag.get('name', '') for tag in tags]
-
-        # Extract space_id
-        space_id = obj.get('space_id')
-
-        # Flatten text content
-        raw_text = flatten_anytype_blocks(obj)
-        full_text = f"{raw_text}"
-        sentences = split_into_sentences(full_text)
-        chunks = chunk_sentences(sentences)
-
-        collection.delete(where={"document_id": doc_id})
-        metadata = extract_metadata(obj)
-        for i, chunk in enumerate(chunks):
-            collection.add(
-                documents=[chunk],
-                 metadatas=[sanitize_metadata({
-                    "document_id": doc_id,
-                    "chunk_index": i,
-                    "space_id": space_id,
-                    "title": title,
-                    **metadata  # This unpacks all the extracted metadata
-                })],
-                ids=[f"{doc_id}_{i}"]
-            )
-
-        updated_cache[doc_id] = last_modified_date
-
-        # Log progress
-        if (idx + 1) % 10 == 0 or (idx + 1) == total_docs:
-            elapsed = time.time() - start_time
-            docs_done = idx + 1
-            docs_left = total_docs - docs_done
-            avg_time_per_doc = elapsed / docs_done
-            est_time_left = avg_time_per_doc * docs_left
-
-            logger.info(f"Ingested {docs_done}/{total_docs} docs "
-                  f"({(docs_done / total_docs) * 100:.1f}%) | "
-                  f"Elapsed: {elapsed:.1f}s | "
-                  f"ETA: {est_time_left:.1f}s")
-
-    save_ingest_cache(updated_cache)
-    logger.info("Ingest cache updated!")
+# Utils
+anytype_auth = AnytypeAuthenticator(AnyTypeStore(None, None), config_path)
+embedding_utils = EmbeddingUtils(client, collection, cache_path)
 
 @mcp.tool()
 async def ingest_documents() -> Dict[str, Any]:
@@ -231,7 +83,7 @@ async def ingest_documents() -> Dict[str, Any]:
 
         offset += 50
 
-    ingest_anytype_documents(documents)
+    embedding_utils.ingest_anytype_documents(documents)
     
     return {
         "status": "success",
@@ -292,7 +144,7 @@ async def query_documents(
                 "title": title,
                 "link": f"anytype://object?objectId={doc_id}&spaceId={space_id}",
                 "similarity_score": distance,
-                "content": flatten_anytype_blocks(full_doc["object"]),
+                "content": embedding_utils.flatten_anytype_blocks(full_doc["object"]),
                 "metadatas": metadata
             })
         else:
