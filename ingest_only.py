@@ -4,7 +4,7 @@ import os
 import nltk
 from platformdirs import user_data_dir
 from anytype import ingest_documents
-from anytype_authenticator import AnytypeAuthenticator
+from utils.anytype_authenticator import AnytypeAuthenticator
 from anytype_api.anytype_store import AnyTypeStore
 
 async def main():
@@ -14,9 +14,9 @@ async def main():
 
     auth = AnytypeAuthenticator(AnyTypeStore(None, None), config_path)
     if auth.config.get('app_token') == None:
-        await auth.get_challenge_id()
+        await auth.get_challenge_id_async()
         print("Secret Code: ")
-        await auth.get_token(input())
+        await auth.get_token_async(input())
 
     nltk_dir = os.path.join(persist_dir, "nltk-data")
     print(f"huh {nltk_dir}")

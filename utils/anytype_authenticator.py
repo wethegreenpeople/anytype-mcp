@@ -2,8 +2,7 @@ import logging
 import os
 import json
 from typing import Dict, Any
-
-from anytype_api.anytype_store import AnyTypeStore
+from anytype_api import AnyTypeStore
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -32,7 +31,7 @@ class AnytypeAuthenticator:
         except IOError as e:
             logger.error(f"Failed to save configuration: {e}")
 
-    async def get_challenge_id(self) -> str:
+    async def get_challenge_id_async(self) -> str:
         """
         Get a challenge ID
         
@@ -52,7 +51,7 @@ class AnytypeAuthenticator:
             logger.error(f"Authentication failed: {e}")
             raise
 
-    async def get_token(self, secret_code: str) -> AnyTypeStore:
+    async def get_token_async(self, secret_code: str) -> AnyTypeStore:
         """
         Get a valid anytype authentication token using a challenge id and secret code
         

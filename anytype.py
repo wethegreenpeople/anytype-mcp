@@ -8,7 +8,7 @@ from typing import List, Optional, Dict, Any
 from fastmcp import FastMCP
 from platformdirs import user_data_dir
 from anytype_api.anytype_store import AnyTypeStore
-from anytype_authenticator import AnytypeAuthenticator
+from utils.anytype_authenticator import AnytypeAuthenticator
 import chromadb
 import nltk
 from chromadb.utils.embedding_functions import OllamaEmbeddingFunction
