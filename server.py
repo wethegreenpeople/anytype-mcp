@@ -1,6 +1,6 @@
 import logging
 import os
-from typing import Any
+from typing import Optional
 
 from fastmcp import FastMCP
 from platformdirs import user_data_dir

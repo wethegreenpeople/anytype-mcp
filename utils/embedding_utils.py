@@ -2,15 +2,36 @@ import json
 import logging
 import os
 import time
-from typing import Dict, List, Optional, Union, Any
+from typing import Dict, List, Optional, Union, Set, TypedDict, cast
 import chromadb
 from nltk.tokenize import sent_tokenize
 from chromadb.utils.embedding_functions import OllamaEmbeddingFunction
+from chromadb.api.models.Collection import Collection
 
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 logging.getLogger("httpx").setLevel(logging.WARNING)
+
+class AnytypeBlock(TypedDict, total=False):
+    text: Dict[str, str]
+
+class AnytypeObject(TypedDict, total=False):
+    snippet: str
+    blocks: List[AnytypeBlock]
+    properties: List[Dict[str, object]]
+    id: str
+    name: str
+    space_id: str
+
+class Property(TypedDict, total=False):
+    id: str
+    name: str
+    format: str
+    multi_select: List[Dict[str, str]]
+    date: str
+    text: str
+    object: object
 
 class EmbeddingUtils:
     def __init__(self, chroma_dir: str, cache_path: str) -> None:
@@ -21,7 +42,7 @@ class EmbeddingUtils:
 
         # Initialize ChromaDB client
         self.embedding_function = OllamaEmbeddingFunction(model_name=OLLAMA_MODEL)
-        self.collection = self.client.get_or_create_collection(name="anytype_pages", embedding_function=self.embedding_function)
+        self.collection: Collection = self.client.get_or_create_collection(name="anytype_pages", embedding_function=self.embedding_function)
         self.cache_path = cache_path
 
         self.cache: Dict[str, str] = self._load_cache()
@@ -32,7 +53,7 @@ class EmbeddingUtils:
                 return json.load(f)
         return {}
     
-    def flatten_anytype_blocks(self, page: Dict[str, Any]) -> str:
+    def flatten_anytype_blocks(self, page: AnytypeObject) -> str:
         snippet = page.get("snippet", "")
         blocks = page.get("blocks", [])
         block_texts = [
@@ -65,27 +86,30 @@ class EmbeddingUtils:
         with open(self.cache_path, "w") as f:
             json.dump(updated_cache, f, indent=2)
 
-    def _sanitize_metadata_value(self, v: Any) -> Union[str, Any]:
+    def _sanitize_metadata_value(self, v: object) -> Union[str, object]:
         if v is None:
             return ""
         if isinstance(v, list):
             return ", ".join(map(str, v))  # in case we missed a list
         return v
 
-    def _sanitize_metadata(self, metadata: Dict[str, Any]) -> Dict[str, Any]:
+    def _sanitize_metadata(self, metadata: Dict[str, object]) -> Dict[str, object]:
         return {k: self._sanitize_metadata_value(v) for k, v in metadata.items()}
 
-    def _extract_metadata(self, obj: Dict[str, Any]) -> Dict[str, Any]:
+    def _extract_metadata(self, obj: AnytypeObject) -> Dict[str, object]:
         """
         Extract all relevant metadata from an Anytype object's properties
         """
-        metadata: Dict[str, Any] = {}
+        metadata: Dict[str, object] = {}
         
         for prop in obj.get('properties', []):
             prop_id = prop.get('id')
             prop_name = prop.get('name')
             prop_format = prop.get('format')
             
+            if not prop_id:
+                continue
+                
             # Handle multi-select properties
             if prop_format == 'multi_select':
                 metadata[prop_id] = [
@@ -94,23 +118,23 @@ class EmbeddingUtils:
             
             # Handle date properties
             elif prop_format == 'date':
-                metadata[prop_id] = prop.get('date')
+                metadata[prop_id] = prop.get('date', '')
             
             # Handle text properties
             elif prop_format == 'text':
-                metadata[prop_id] = prop.get('text')
+                metadata[prop_id] = prop.get('text', '')
             
             # Handle object properties
             elif prop_format == 'object':
-                metadata[prop_id] = prop.get('object')
+                metadata[prop_id] = prop.get('object', {})
             
             # Add the property name as a key as well for more readable queries
             if prop_name and prop_name != prop_id:
-                metadata[prop_name] = metadata.get(prop_id)
+                metadata[prop_name] = metadata.get(prop_id, '')
         
         return metadata
 
-    def ingest_anytype_documents(self, documents: List[Dict[str, Any]]) -> None:
+    def ingest_anytype_documents(self, documents: List[AnytypeObject]) -> None:
         total_docs = len(documents)
         logger.info(f"Starting ingestion of {total_docs} documents...")
 
@@ -120,27 +144,27 @@ class EmbeddingUtils:
         for idx, doc in enumerate(documents):
             obj = doc
             
-            doc_id = obj.get("id")
+            doc_id = obj.get("id", "")
             title = obj.get("name", "")
 
             # Extract metadata from properties
-            properties = {prop['id']: prop for prop in obj.get('properties', [])}
+            properties = {prop['id']: cast(Property, prop) for prop in obj.get('properties', []) if 'id' in prop}
             
             # Extract dates
-            created_date = properties.get('created_date', {}).get('date')
-            last_modified_date = properties.get('last_modified_date', {}).get('date')
+            created_date = properties.get('created_date', {}).get('date', '')
+            last_modified_date = properties.get('last_modified_date', {}).get('date', '')
 
             if self.collection.count() > 0 and doc_id in self.cache and self.cache[doc_id] == last_modified_date:
                 logger.debug(f"Skipping '{title}' (unchanged)")
                 continue
 
             # Extract tags
-            tags_prop = next((prop for prop in obj.get('properties', []) if prop['id'] == 'tag'), None)
+            tags_prop = next((prop for prop in obj.get('properties', []) if prop.get('id') == 'tag'), None)
             tags = tags_prop.get('multi_select', []) if tags_prop else []
             tags = [tag.get('name', '') for tag in tags]
 
             # Extract space_id
-            space_id = obj.get('space_id')
+            space_id = obj.get('space_id', '')
 
             # Flatten text content
             raw_text = self.flatten_anytype_blocks(obj)

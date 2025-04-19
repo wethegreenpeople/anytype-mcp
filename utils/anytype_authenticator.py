@@ -1,29 +1,33 @@
 import logging
 import os
 import json
-from typing import Dict, Any
-from anytype_api import AnyTypeStore
+from typing import Dict, Optional, TypedDict, cast
+from anytype_api.anytype_store import AnyTypeStore
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+class ConfigDict(TypedDict, total=False):
+    challenge_id: str
+    app_token: str
 
 class AnytypeAuthenticator:
     def __init__(self, store: AnyTypeStore, config_file: str):
         self.store = store
         self.config_file = config_file
-        self.config = self._load_config()
+        self.config: ConfigDict = self._load_config()
 
-    def _load_config(self) -> Dict[str, Any]:
+    def _load_config(self) -> ConfigDict:
         """Load configuration from file, creating it if it doesn't exist."""
         try:
             if os.path.exists(self.config_file):
                 with open(self.config_file, 'r') as f:
-                    return json.load(f)
+                    return cast(ConfigDict, json.load(f))
         except (json.JSONDecodeError, IOError):
             pass
         return {}
 
-    def _save_config(self):
+    def _save_config(self) -> None:
         """Save configuration to file."""
         try:
             with open(self.config_file, 'w') as f:
@@ -42,16 +46,18 @@ class AnytypeAuthenticator:
         try:
             if not self.config.get('challenge_id'):
                 # Get challenge ID
-                self.config['challenge_id'] = await self.store.get_challenge()
+                self.config['challenge_id'] = await self.store.get_challenge_async()
                 self._save_config()
                 logger.info(f"Obtained challenge ID")
 
                 return self.config['challenge_id']
+            
+            return self.config['challenge_id']
         except Exception as e:
             logger.error(f"Authentication failed: {e}")
             raise
 
-    async def get_token_async(self, secret_code: str) -> AnyTypeStore:
+    async def get_token_async(self, secret_code: str) -> str:
         """
         Get a valid anytype authentication token using a challenge id and secret code
         
@@ -61,7 +67,7 @@ class AnytypeAuthenticator:
 
         try:
             # Get app token
-            app_token = await self.store.get_token(self.config['challenge_id'], secret_code)
+            app_token = await self.store.get_token_async(self.config['challenge_id'], secret_code)
             
             # Save the token
             self.config['app_token'] = app_token

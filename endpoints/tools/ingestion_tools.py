@@ -1,14 +1,33 @@
 import logging
-from typing import Any, Dict
+from typing import Dict, List, Optional, TypedDict, Union
 from collections import Counter
+from fastmcp import FastMCP
 from utils import EmbeddingUtils
+from utils.anytype_authenticator import AnytypeAuthenticator
+from anytype_api.anytype_store import AnyTypeStore
+import chromadb
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 logging.getLogger("httpx").setLevel(logging.WARNING)
 
+class IngestionStatus(TypedDict):
+    status: str
+    documents_ingested: int
+
+class StatsResponse(TypedDict, total=False):
+    status: str
+    message: Optional[str]
+    collection_name: str
+    embedding_model: str
+    total_chunks: int
+    unique_documents: int
+    avg_chunks_per_document: float
+    chroma_dir: str
+    nltk_dir: Optional[str]
+
 class IngestionTools():
-    def __init__(self, mcp, anytype_auth, embedding_utils: EmbeddingUtils):
+    def __init__(self, mcp: FastMCP, anytype_auth: AnytypeAuthenticator, embedding_utils: EmbeddingUtils):
         self.mcp = mcp
         self.anytype_auth = anytype_auth
         self.embedding_utils = embedding_utils
@@ -20,22 +39,22 @@ class IngestionTools():
         self.register_tools()
 
     @property
-    def chroma_dir(self):
+    def chroma_dir(self) -> str:
         return self.embedding_utils.chroma_dir
 
     @property
-    def nltk_dir(self):
+    def nltk_dir(self) -> Optional[str]:
         # This would need to be passed in from server.py
         # For now we'll return None as it's only used for reporting
         return None
         
-    def register_tools(self):
+    def register_tools(self) -> None:
         """Register class methods as MCP tools"""
         self.mcp.tool()(self.ingest_documents)
         self.mcp.tool()(self.get_ingestion_stats)
         self.mcp.tool()(self.clear_ingestion)
 
-    async def ingest_documents(self) -> Dict[str, Any]:
+    async def ingest_documents(self) -> IngestionStatus:
         """
         Ingest anytype documents from the API into the vector store for RAG, semantic searches, and for additional information in other tools on this MCP server.
         Ingestion could have been done prior, so don't start the ingestion process unless explicitly asked to
@@ -43,12 +62,12 @@ class IngestionTools():
         Returns:
             Ingestion summary
         """
-        documents = []
-        offset = 0
+        documents: List[Dict[str, object]] = []
+        offset: int = 0
         logger.info("Starting anytype ingestion")
-        store = self.anytype_auth.get_authenticated_store()
+        store: AnyTypeStore = self.anytype_auth.get_authenticated_store()
         while (True):
-            results = []
+            results: List[Dict[str, object]] = []
             results = (await store.query_documents_async(offset, 50, "")).get("data", [])
             documents.extend(results)
 
@@ -64,8 +83,8 @@ class IngestionTools():
             "documents_ingested": len(documents)
         }
     
-    def get_stats(self):
-        stats = {
+    def get_stats(self) -> StatsResponse:
+        stats: Dict[str, Union[str, int, float, None]] = {
             "collection_name": self.collection.name,
             "embedding_model": getattr(self.embedding_function, "model_name", "unknown")
         }
@@ -86,7 +105,7 @@ class IngestionTools():
             else:
                 metadatas = metadatas_raw
 
-            doc_ids = [
+            doc_ids: List[str] = [
                 meta.get("document_id")
                 for meta in metadatas
                 if isinstance(meta, dict) and meta.get("document_id")
@@ -98,7 +117,7 @@ class IngestionTools():
                     "unique_documents": 0,
                     "avg_chunks_per_document": 0.0
                 })
-                return stats
+                return stats  # type: ignore
 
             count_per_doc = Counter(doc_ids)
 
@@ -109,7 +128,7 @@ class IngestionTools():
                 "chroma_dir": self.chroma_dir,
                 "nltk_dir": self.nltk_dir
             })
-            return stats
+            return stats  # type: ignore
 
         except Exception as e:
             logger.exception("Failed to get ingestion stats")
@@ -118,7 +137,7 @@ class IngestionTools():
                 "message": str(e)
             }
 
-    async def get_ingestion_stats(self) -> Dict[str, Any]:
+    async def get_ingestion_stats(self) -> StatsResponse:
         """
         Get statistics about the Chroma DB ingestion process.
         
@@ -127,7 +146,7 @@ class IngestionTools():
         """
         return self.get_stats()
 
-    async def clear_ingestion(self) -> Dict[str, Any]:
+    async def clear_ingestion(self) -> StatsResponse:
         """
         Clear previous ingestion
         
