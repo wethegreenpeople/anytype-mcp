@@ -19,7 +19,7 @@ A Model Context Protocol (MCP) server for Anytype that enables semantic search a
 
 1. Clone the repository:
 ```bash
-git clone https://github.com/your-username/anytype-mcp.git
+git clone https://github.com/wethegreenpeople/anytype-mcp.git
 cd anytype-mcp
 ```
 
