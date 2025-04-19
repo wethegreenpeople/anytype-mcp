@@ -43,6 +43,48 @@ python scripts/ingest_only.py
 fastmcp install server.py
 ```
 
+## Manual Configuration for Claude Desktop
+
+If you want to manually add the Anytype MCP server to your Claude Desktop application, you'll need to modify the `claude_desktop_config.json` file. This file is typically located at:
+
+- Windows: `%APPDATA%\Claude\claude_desktop_config.json`
+- macOS: `~/Library/Application Support/Claude/claude_desktop_config.json`
+- Linux: `~/.config/Claude/claude_desktop_config.json`
+
+Add the following configuration to the `mcpServers` section of your `claude_desktop_config.json`:
+
+```json
+"anytype": {
+  "command": "uv",
+  "args": [
+    "run",
+    "--with",
+    "chromadb",
+    "--with",
+    "fastmcp",
+    "--with",
+    "httpx",
+    "--with",
+    "nltk",
+    "--with",
+    "ollama",
+    "--with",
+    "platformdirs",
+    "--with",
+    "sentence-transformers",
+    "fastmcp",
+    "run",
+    "[PATH_TO_ANYTYPE_MCP]/server.py"
+  ]
+}
+```
+
+Replace `[PATH_TO_ANYTYPE_MCP]` with the absolute path to your anytype-mcp directory. For example:
+- Windows: `C:\\Users\\username\\Documents\\anytype-mcp\\server.py`
+- macOS/Linux: `/home/username/anytype-mcp/server.py`
+
+Make sure to use double backslashes (`\\`) for Windows paths in the JSON file.
+
 ## Authentication
 
 The server handles authentication with Anytype via a challenge-based flow:
