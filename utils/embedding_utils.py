@@ -86,11 +86,13 @@ class EmbeddingUtils:
         with open(self.cache_path, "w") as f:
             json.dump(updated_cache, f, indent=2)
 
-    def _sanitize_metadata_value(self, v: object) -> Union[str, object]:
+    def _sanitize_metadata_value(self, v: object) -> Union[str, int, float, bool]:
         if v is None:
             return ""
         if isinstance(v, list):
             return ", ".join(map(str, v))  # in case we missed a list
+        if isinstance(v, dict):
+            return json.dumps(v)  # Convert dictionaries to JSON strings
         return v
 
     def _sanitize_metadata(self, metadata: Dict[str, object]) -> Dict[str, object]:
