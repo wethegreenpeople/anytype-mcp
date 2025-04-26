@@ -6,6 +6,7 @@ from utils import EmbeddingUtils
 from utils.anytype_authenticator import AnytypeAuthenticator
 from anytype_api.anytype_store import AnyTypeStore
 import chromadb
+import time
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -49,33 +50,60 @@ class IngestionTools():
         return None
         
     def register_tools(self) -> None:
-        """Register class methods as MCP tools"""
+        """
+        Register class methods as MCP tools.
+        
+        This method sets up the Model Context Protocol (MCP) tools
+        for document ingestion and management by adding them to the 
+        FastMCP tool registry.
+        """
         self.mcp.tool()(self.ingest_documents)
         self.mcp.tool()(self.get_ingestion_stats)
         self.mcp.tool()(self.clear_ingestion)
 
     async def ingest_documents(self) -> IngestionStatus:
         """
-        Ingest anytype documents from the API into the vector store for RAG, semantic searches, and for additional information in other tools on this MCP server.
-        Ingestion could have been done prior, so don't start the ingestion process unless explicitly asked to
+        Ingest Anytype documents into the vector database for search and retrieval.
+        
+        This method fetches all documents from Anytype in batches, processes them into 
+        text chunks, creates vector embeddings, and stores them in the ChromaDB collection.
+        The documents will then be available for semantic search and RAG operations.
         
         Returns:
-            Ingestion summary
+            Dictionary with status and count of documents ingested
         """
         documents: List[Dict[str, object]] = []
         offset: int = 0
-        logger.info("Starting anytype ingestion")
+        logger.info("Starting anytype document collection")
         store: AnyTypeStore = self.anytype_auth.get_authenticated_store()
+        
+        # Fetch documents in batches
+        fetch_start_time = time.time()
+        batch_count = 0
+        
         while (True):
+            batch_start_time = time.time()
             results: List[Dict[str, object]] = []
             results = (await store.query_documents_async(offset, 50, "")).get("data", [])
-            documents.extend(results)
+            batch_size = len(results)
+            
+            if batch_size > 0:
+                batch_count += 1
+                batch_time = time.time() - batch_start_time
+                logger.info(f"Fetched batch #{batch_count}: {batch_size} documents (offset {offset}) in {batch_time:.2f}s")
+                documents.extend(results)
 
-            if len(results) != 50: 
+            if batch_size != 50: 
                 break
 
             offset += 50
 
+        total_fetch_time = time.time() - fetch_start_time
+        total_docs = len(documents)
+        logger.info(f"Document collection complete. Found {total_docs} documents in {total_fetch_time:.2f}s")
+
+        # Process and ingest the documents
+        logger.info("Starting vector embedding and ingestion process")
         self.embedding_utils.ingest_anytype_documents(documents)
         
         return {
@@ -84,6 +112,19 @@ class IngestionTools():
         }
     
     def get_stats(self) -> StatsResponse:
+        """
+        Internal method to gather statistics about the ingested documents.
+        
+        This helper method collects metrics about the vector database including:
+        - Collection name and embedding model used
+        - Total number of text chunks stored
+        - Number of unique documents
+        - Average chunks per document
+        - Storage locations
+        
+        Returns:
+            Dictionary containing detailed statistics about the ingested content
+        """
         stats: Dict[str, Union[str, int, float, None]] = {
             "collection_name": self.collection.name,
             "embedding_model": getattr(self.embedding_function, "model_name", "unknown")
@@ -139,19 +180,32 @@ class IngestionTools():
 
     async def get_ingestion_stats(self) -> StatsResponse:
         """
-        Get statistics about the Chroma DB ingestion process.
+        Get detailed statistics about the Anytype document ingestion.
+        
+        This method returns comprehensive information about the current state
+        of the vector database, including:
+        - Total number of text chunks stored
+        - Number of unique Anytype documents ingested
+        - Average number of chunks per document
+        - Embedding model being used
+        - Storage locations (Chroma DB and NLTK directories)
         
         Returns:
-            Stats such as total chunks, unique documents, and model used.
+            Dictionary containing detailed statistics about the ingested content
         """
         return self.get_stats()
 
     async def clear_ingestion(self) -> StatsResponse:
         """
-        Clear previous ingestion
+        Clear all previously ingested document data from the vector database.
+        
+        This method removes the entire ChromaDB collection containing Anytype document
+        embeddings and recreates an empty collection with the same name. This is useful
+        when you want to start fresh with a new ingestion or when document content has
+        changed significantly.
         
         Returns:
-            Stats such as total chunks, unique documents, and model used.
+            Dictionary containing statistics about the newly created empty collection
         """
         self.client.delete_collection(name="anytype_pages")
         self.collection = self.client.get_or_create_collection(name="anytype_pages", embedding_function=self.embedding_function)
