@@ -35,8 +35,12 @@ async def main():
         await auth.get_token_async(input())
     
     # Set up nltk
-    print(f"NLTK directory: {nltk_dir}")
-    nltk.download("punkt_tab", download_dir=nltk_dir)
+    tokenizer_path = os.path.join(nltk_dir, "tokenizers", "punkt_tab")
+    if not os.path.exists(tokenizer_path):
+        print(f"Downloading NLTK tokenizer to {nltk_dir}")
+        nltk.download("punkt_tab", download_dir=nltk_dir)
+    else:
+        print(f"NLTK tokenizer already exists at {tokenizer_path}")
     nltk.data.path.append(nltk_dir)
     
     # Initialize dependencies

@@ -45,7 +45,12 @@ mcp = FastMCP("anytype", dependencies=[
 ])
 
 # Initialize NLTK tokenizer
-nltk.download(TOKENIZER, download_dir=nltk_dir)
+tokenizer_path = os.path.join(nltk_dir, "tokenizers", "punkt_tab")
+if not os.path.exists(tokenizer_path):
+    logger.info(f"Downloading NLTK tokenizer to {nltk_dir}")
+    nltk.download(TOKENIZER, download_dir=nltk_dir)
+else:
+    logger.debug(f"NLTK tokenizer already exists at {tokenizer_path}")
 nltk.data.path.append(nltk_dir)
 
 # Utils
